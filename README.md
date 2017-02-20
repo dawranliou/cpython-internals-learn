@@ -119,3 +119,39 @@ It points to the Next free slot in value stack.
 
 > `#define` is Macro in C. For example `#define LOAD_CONST 100`. This macro
 means to replace every occurrence of `LOAD_CONST` with `100`.
+
+Line 964, Infinite loop to go through the byte code:
+```c
+    for (;;) {
+        ...
+```
+
+Line 1078, extract opcode:
+```c
+        /* Extract opcode and argument */
+
+        opcode = NEXTOP();
+        oparg = 0;   /* allows oparg to be stored in a register because
+            it doesn't have to be remembered across a full loop */
+```
+
+Line 1112, GIANT switch case:
+```c
+        switch (opcode) {
+            ...
+```
+
+Line 2959, breaking out of the main loop:
+```c
+        if (why != WHY_NOT)
+            break;
+        READ_TIMESTAMP(loop1);
+
+    } /* main loop */
+```
+
+Line 3020, return retval
+```c
+    return retval;
+}
+```
