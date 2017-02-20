@@ -2,6 +2,30 @@
 
 Class link: http://pgbovine.net/cpython-internals.htm
 
+# Lecture 1 - Interpreter and Source Code Overview
+
+```
+source code   |                (C)Python                   |       output
+              |                                            |
+  test.py     --->  compiler -> [bytecode] -> interpreter  ---> 'Hello World!'
+                                    ^                                ^
+                                    |                                |
+                                    |                                |
+                                    ----------------------------------
+                                        This is more interesting
+```
+
+## Python sourcecode tree
+
+Main subdirectories:
+1. `Include/` - all the .h files
+1. `Objects/` - all the .c files representing python objects
+1. `Python/` - the main runtime
+
+Other subdirectories:
+1. `Modules/` - built-in modules implemented in C
+1. `Libs/` - standard libraries implemented in Python
+
 # Lecture 2 - Opcodes and main interpreter loop
 
 Focusing on two files:
