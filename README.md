@@ -85,7 +85,7 @@ Disassemble python code: `$ python -m dis test.py`
 The byte code is mapped to the disassembled code, somehow, with some
 optimization. The disassembler knows how to read the byte code.
 
-The format for the disassmbled code is:
+The format for the disassembled code is:
 ```
 LINE_NUMBER -> BYTE_OFFSET OP_CODE -> INTERNAL_BOOK_KEEPING_STUFF ARGUMENT
 ```
@@ -104,7 +104,7 @@ Let's look at `opcode.h`
 
 > `byteplay` is a module which lets you easily play with Python bytecode.
 
-Python virtual machine is a "Stack Machine." When a const is loaded by 
+Python virtual machine is a "Stack Machine." When a const is loaded by
 calling `LOAD_CONST`, the
 value is pushed onto the "Value Stack." When the `STORE_NAME` is called,
 the last value on the Value Stack is popped and saved in the memory
@@ -116,7 +116,7 @@ So now the value has the Reference Counting of 2. One from the variable
 name, another from the Value Stack.)
 
 `BINARY_ADD` pops the two values from the Value Stack and pushs the
-result on top of the Value Stack again. 
+result on top of the Value Stack again.
 
 > `PRINT_ITEM` is a primitive operation in legacy Python (Python 2)
 
