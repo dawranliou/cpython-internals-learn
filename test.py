@@ -1,4 +1,11 @@
-x = 1
-y = 2
-z = x + y
-print z
+x = 10
+
+def foo(x):
+    y = x * 2
+    return bar(y)
+
+def bar(x):
+    y = x / 2
+    return y
+
+z = foo(x)
