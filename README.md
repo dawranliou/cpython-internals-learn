@@ -591,3 +591,239 @@ _PyObject_Str(PyObject *v)
     ...
 }
 ```
+
+# Lecture 5 - Example Python data types
+
+Learning Objective
+* To understand how Python data types are subtypes of the core PyObject
+
+1. Intro to Python sequence types - tuples, lists, strings
+2. Abstract object interface: Objects/abstract.c
+3. String type: Objects/stringobject.c
+
+Every object is either a `PyObject_HEAD` object or a
+`PyObject_VAR_HEAD` object
+
+```c
+#define PyObject_HEAD                   \
+    _PyObject_HEAD_EXTRA                \
+    Py_ssize_t ob_refcnt;               \
+    struct _typeobject *ob_type;
+
+#define PyObject_VAR_HEAD               \
+    PyObject_HEAD                       \
+    Py_ssize_t ob_size; /* Number of items in variable part */
+## Python sequence types
+```
+
+Tuple, List, and Strings
+* `tuple` is immutable; `list` is mutable
+* `tuple` is a sequence of fixed pointers
+* `str` is mutable
+
+## Strings
+
+"C string"
+* Array of bytes that ends with null byte (0x00)
+* Don't know how long the string is unless going through them all
+
+`Include/stringobject.h`
+
+> Type PyStringObject represents a character string.  An extra zero byte is
+reserved at the end to ensure it is zero-terminated, but a size is
+present so strings with null bytes in them can be represented.  This
+is an immutable object type.
+
+One can put null byte in the middle of Python string.
+
+> There are functions to create new string objects, to test
+an object for string-ness, and to get the
+string value.  The latter function returns a null pointer
+if the object is not of the proper type.
+There is a variant that takes an explicit size as well as a
+variant that assumes a zero-terminated string.  Note that none of the
+functions should be applied to nil objects.
+
+```c
+/* Caching the hash (ob_shash) saves recalculation of a string's hash value.
+   Interning strings (ob_sstate) tries to ensure that only one string
+   object with a given value exists, so equality tests can be one pointer
+   comparison.  This is generally restricted to strings that "look like"
+   Python identifiers, although the intern() builtin can be used to force
+   interning of any string.
+   Together, these sped the interpreter by up to 20%. */
+
+typedef struct {
+    PyObject_VAR_HEAD
+    long ob_shash;
+    int ob_sstate;
+    char ob_sval[1];
+
+    /* Invariants:
+     *     ob_sval contains space for 'ob_size+1' elements.
+     *     ob_sval[ob_size] == 0.
+     *     ob_shash is the hash of the string or -1 if not computed yet.
+     *     ob_sstate != 0 iff the string object is in stringobject.c's
+     *       'interned' dictionary; in this case the two references
+     *       from 'interned' to this object are *not counted* in ob_refcnt.
+     */
+} PyStringObject;
+```
+
+* [String interning] (https://en.wikipedia.org/wiki/String_interningg) -
+string caching optimization
+
+# String comparison
+
+```python
+x = 'hello'
+y = 'hello'
+x == y
+```
+
+``` ./python -m dis test.py
+  1           0 LOAD_CONST               0 ('hello')
+              3 STORE_NAME               0 (x)
+
+  2           6 LOAD_CONST               0 ('hello')
+              9 STORE_NAME               1 (y)
+
+  3          12 LOAD_NAME                0 (x)
+             15 LOAD_NAME                1 (y)
+             18 COMPARE_OP               2 (==)
+             21 POP_TOP
+             22 LOAD_CONST               1 (None)
+             25 RETURN_VALUE
+```
+
+In `ceval.c`
+
+```c
+static PyObject *
+cmp_outcome(int op, register PyObject *v, register PyObject *w)
+{
+    ...
+    default:
+        return PyObject_RichCompare(v, w, op);
+    ...
+```
+
+In `object.c`
+
+```c
+PyObject_RichCompare(PyObject *v, PyObject *w, int op)
+{
+    ...
+    /* If the types are equal, and not old-style instances, try to
+       get out cheap (don't bother with coercions etc.). */
+    if (v->ob_type == w->ob_type && !PyInstance_Check(v)) {
+        cmpfunc fcmp;
+        richcmpfunc frich = RICHCOMPARE(v->ob_type);
+        /* If the type has richcmp, try it first.  try_rich_compare
+           tries it two-sided, which is not needed since we've a
+           single type only. */
+        if (frich != NULL) {
+            res = (*frich)(v, w, op);
+            if (res != Py_NotImplemented)
+                goto Done;
+            Py_DECREF(res);
+        }
+    ...
+```
+
+The frich is the function pointer of the PyOject. This is undeterministic
+until runtime.
+
+In `stringobject.c`
+
+```c
+PyTypeObject PyString_Type = {
+    PyVarObject_HEAD_INIT(&PyType_Type, 0)
+    "str",
+    PyStringObject_SIZE,
+    sizeof(char),
+    string_dealloc,                             /* tp_dealloc */
+    (printfunc)string_print,                    /* tp_print */
+    ...
+    (richcmpfunc)string_richcompare,            /* tp_richcompare */
+    ...
+
+static PyObject*
+string_richcompare(PyStringObject *a, PyStringObject *b, int op)
+{
+    ...
+    if (op == Py_EQ) {
+        /* Supporting Py_NE here as well does not save
+           much time, since Py_NE is rarely used.  */
+        if (Py_SIZE(a) == Py_SIZE(b)
+            && (a->ob_sval[0] == b->ob_sval[0]
+            && memcmp(a->ob_sval, b->ob_sval, Py_SIZE(a)) == 0)) {
+            result = Py_True;
+        } else {
+            result = Py_False;
+        }
+        goto out;
+    }
+    ...
+```
+
+## String concatenation
+
+```c
+void
+PyString_Concat(register PyObject **pv, register PyObject *w)
+{
+    ...
+    v = string_concat((PyStringObject *) *pv, w);
+    ...
+}
+```
+
+```c
+static PyObject *
+string_concat(register PyStringObject *a, register PyObject *bb)
+{
+    ...
+    size = Py_SIZE(a) + Py_SIZE(b);
+    ...
+    op = (PyStringObject *)PyObject_MALLOC(PyStringObject_SIZE + size);
+    if (op == NULL)
+        return PyErr_NoMemory();
+    PyObject_INIT_VAR(op, &PyString_Type, size);
+    op->ob_shash = -1;
+    op->ob_sstate = SSTATE_NOT_INTERNED;
+    Py_MEMCPY(op->ob_sval, a->ob_sval, Py_SIZE(a));
+    Py_MEMCPY(op->ob_sval + Py_SIZE(a), b->ob_sval, Py_SIZE(b));
+    op->ob_sval[size] = '\0';
+    return (PyObject *) op;
+    ...
+}
+```
+
+Actually no, there's a shortcut baked into `ceval.c`:
+
+```c
+        case BINARY_ADD:
+            w = POP();
+            v = TOP();
+            ...
+            else if (PyString_CheckExact(v) &&
+                     PyString_CheckExact(w)) {
+                x = string_concatenate(v, w, f, next_instr);
+                /* string_concatenate consumed the ref to v */
+                goto skip_decref_vx;
+            }
+            else {
+              slow_add:
+                x = PyNumber_Add(v, w);
+            }
+            Py_DECREF(v);
+          skip_decref_vx:
+            Py_DECREF(w);
+            SET_TOP(x);
+            if (x != NULL) continue;
+            break;
+```
+
+Homework: figure out how to get from the slow add `PyNumber_Add` to string
+concatenation.
