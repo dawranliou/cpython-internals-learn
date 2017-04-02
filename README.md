@@ -442,3 +442,152 @@ fast_function(PyObject *func, PyObject ***pp_stack, int n, int na, int nk)
     ...
 }
 ```
+
+# Lecture 4 - PyObject: The core Python object
+
+Learning Objective
+* To be able to inspect any object in Python and
+understand the basics of its inner contents
+
+[Python Data Model](https://docs.python.org/3/reference/datamodel.html):
+Everything is a object!
+* Emulating numeric types: `__add__`, `__sub__`, `__mul__`...
+* Example: `Objects/intobject.c`
+
+```c
+static PyObject *
+int_add(PyIntObject *v, PyIntObject *w)
+{
+    register long a, b, x;
+    CONVERT_TO_LONG(v, a);
+    CONVERT_TO_LONG(w, b);
+    /* casts in the line below avoid undefined behaviour on overflow */
+    x = (long)((unsigned long)a + b);
+    if ((x^a) >= 0 || (x^b) >= 0)
+        return PyInt_FromLong(x);
+    return PyLong_Type.tp_as_number->nb_add((PyObject *)v, (PyObject *)w);
+}
+```
+
+A PyObject has:
+1. Type: `str`, `int`, `list`
+2. Identity
+3. Value
+4. (Reference count): CPython implementation detail.
+
+```python
+from sys import getrefcount
+x = ['a', 'b', 'c']
+getrefcount(x)  # 3
+```
+
+In `Include/object.h`:
+
+> An object has a 'reference count' that is increased or decreased when a
+pointer to the object is copied or deleted; when the reference count
+reaches zero there are no references to the object left and it can be
+removed from the heap.
+
+> An object has a 'type' that determines what it represents and what kind
+of data it contains.  An object's type is fixed when it is created.
+Types themselves are represented as objects; an object contains a
+pointer to the corresponding type object.  __The type itself has a type
+pointer pointing to the object representing the type 'type', which
+contains a pointer to itself!__).
+
+`type` itself is of type `type`
+
+...
+
+> Objects do not float around in memory;...
+
+Makes Python less efficient because the memory is more fragmented.
+
+> Objects are always accessed through pointers of the type 'PyObject *'.
+The type 'PyObject' is a structure that only contains the reference count
+and the type pointer.  The actual memory allocated for an object
+contains other data that can only be accessed after casting the pointer
+to a pointer to a longer structure type.  This longer type must start
+with the reference count and type fields; the macro PyObject_HEAD should be
+used for this (to accommodate for future changes).  The implementation
+of a particular object type can cast the object pointer to the proper
+type and back.
+
+`PyObject` is actually very thin. How do we use it?
+* Every object is a "C structural subtype" of PyObject
+* C is not an object oriented language
+
+```c
+#define _PyObject_HEAD_EXTRA
+
+/* PyObject_HEAD defines the initial segment of every PyObject. */
+#define PyObject_HEAD                   \
+    _PyObject_HEAD_EXTRA                \
+    Py_ssize_t ob_refcnt;               \
+    struct _typeobject *ob_type;
+
+/* Nothing is actually declared to be a PyObject, but every pointer to
+ * a Python object can be cast to a PyObject*.  This is inheritance built
+ * by hand.  Similarly every pointer to a variable-size Python object can,
+ * in addition, be cast to PyVarObject*.
+ */
+typedef struct _object {
+    PyObject_HEAD
+} PyObject;
+```
+
+Is equivalent to:
+
+```c
+typedef struct _object {
+    Py_ssize_t ob_refcnt;
+    struct _typeobject *ob_type;
+} PyObject;
+```
+
+The macros are some shorthands. Note that the object is casted to PyObject.
+
+```c
+#define Py_REFCNT(ob)           (((PyObject*)(ob))->ob_refcnt)
+#define Py_TYPE(ob)             (((PyObject*)(ob))->ob_type)
+#define Py_SIZE(ob)             (((PyVarObject*)(ob))->ob_size)
+```
+
+Let's look at `Include/intobject.h`
+
+```c
+typedef struct {
+    PyObject_HEAD
+    long ob_ival;
+} PyIntObject;
+```
+
+Is equivalent to:
+
+```c
+typedef struct {
+    Py_ssize_t ob_refcnt;
+    struct _typeobject *ob_type;
+    long ob_ival;
+} PyIntObject;
+```
+
+--
+
+PyObject to str method: in `object.c`
+
+```c
+PyObject *
+PyObject_Str(PyObject *v)
+{...}
+
+PyObject *
+_PyObject_Str(PyObject *v)
+{
+    ...
+    /* It is possible for a type to have a tp_str representation that loops
+       infinitely. */
+    res = (*Py_TYPE(v)->tp_str)(v);
+    ...
+}
+```
