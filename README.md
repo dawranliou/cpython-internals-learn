@@ -827,3 +827,293 @@ Actually no, there's a shortcut baked into `ceval.c`:
 
 Homework: figure out how to get from the slow add `PyNumber_Add` to string
 concatenation.
+
+# Lecture 6 - Code objects, function objects, and closures
+
+Learning Objective
+* To understand how Python functions are simply PyObject structures
+
+1. Code objects
+2. Function objets
+3. Closures
+
+```python
+def foo(x, y):
+    z = x + y
+    return z
+
+bar = foo
+
+foo.func_name
+# 'foo'
+
+foo.func_dict
+# {}
+
+# pointers to the globals dictionary
+foo.func_globals
+# {'__builtins__': <module '__builtin__' (built-in)>, '__name__': '__main__', 'foo': <function foo at 0x102897de8>, '__doc__': None, '__package__': None} 
+
+# The function is a shell that wraps around the code
+foo.func_code
+# <code object foo at 0x10288b830, file "<stdin>", line 1>
+```
+
+Function contains the code (`func_code`) and its environment (`func_globals`)
+
+```python
+code.co_code
+# '|\x00\x00|\x01\x00\x17}\x02\x00|\x02\x00S'
+```
+
+The function object isn't created until one execute it. However,
+the code object is pre-compiled.
+
+## Code object
+
+In `Include/code.h`
+
+```c
+/* Bytecode object */
+typedef struct {
+    PyObject_HEAD
+    int co_argcount;		/* #arguments, except *args */
+    int co_nlocals;		/* #local variables */
+    int co_stacksize;		/* #entries needed for evaluation stack */
+    int co_flags;		/* CO_..., see below */
+    PyObject *co_code;		/* instruction opcodes */
+    PyObject *co_consts;	/* list (constants used) */
+    PyObject *co_names;		/* list of strings (names used) */
+    PyObject *co_varnames;	/* tuple of strings (local variable names) */
+    PyObject *co_freevars;	/* tuple of strings (free variable names) */
+    PyObject *co_cellvars;      /* tuple of strings (cell variable names) */
+    /* The rest doesn't count for hash/cmp */
+    PyObject *co_filename;	/* string (where it was loaded from) */
+    PyObject *co_name;		/* string (name, for reference) */
+    int co_firstlineno;		/* first source line number */
+    PyObject *co_lnotab;	/* string (encoding addr<->lineno mapping) See
+				   Objects/lnotab_notes.txt for details. */
+    void *co_zombieframe;     /* for optimization only (see frameobject.c) */
+    PyObject *co_weakreflist;   /* to support weakrefs to code objects */
+} PyCodeObject;
+```
+
+## Function object
+
+```c
+typedef struct {
+    PyObject_HEAD
+    PyObject *func_code;	/* A code object */
+    PyObject *func_globals;	/* A dictionary (other mappings won't do) */
+    PyObject *func_defaults;	/* NULL or a tuple */
+    PyObject *func_closure;	/* NULL or a tuple of cell objects */
+    PyObject *func_doc;		/* The __doc__ attribute, can be anything */
+    PyObject *func_name;	/* The __name__ attribute, a string object */
+    PyObject *func_dict;	/* The __dict__ attribute, a dict or NULL */
+    PyObject *func_weakreflist;	/* List of weak references */
+    PyObject *func_module;	/* The __module__ attribute, can be anything */
+
+    /* Invariant:
+     *     func_closure contains the bindings for func_code->co_freevars, so
+     *     PyTuple_Size(func_closure) == PyCode_GetNumFree(func_code)
+     *     (func_closure may be NULL if PyCode_GetNumFree(func_code) == 0).
+     */
+} PyFunctionObject;
+```
+
+The following defines which c attributes Python could access:
+
+```c
+// readonly
+static PyMemberDef func_memberlist[] = {
+    {"func_closure",  T_OBJECT,     OFF(func_closure),
+     RESTRICTED|READONLY},
+    {"__closure__",  T_OBJECT,      OFF(func_closure),
+     RESTRICTED|READONLY},
+    {"func_doc",      T_OBJECT,     OFF(func_doc), PY_WRITE_RESTRICTED},
+    {"__doc__",       T_OBJECT,     OFF(func_doc), PY_WRITE_RESTRICTED},
+    {"func_globals",  T_OBJECT,     OFF(func_globals),
+     RESTRICTED|READONLY},
+    {"__globals__",  T_OBJECT,      OFF(func_globals),
+     RESTRICTED|READONLY},
+    {"__module__",    T_OBJECT,     OFF(func_module), PY_WRITE_RESTRICTED},
+    {NULL}  /* Sentinel */
+};
+
+// not-readonly
+static PyGetSetDef func_getsetlist[] = {
+    {"func_code", (getter)func_get_code, (setter)func_set_code},
+    {"__code__", (getter)func_get_code, (setter)func_set_code},
+    {"func_defaults", (getter)func_get_defaults,
+     (setter)func_set_defaults},
+    {"__defaults__", (getter)func_get_defaults,
+     (setter)func_set_defaults},
+    {"func_dict", (getter)func_get_dict, (setter)func_set_dict},
+    {"__dict__", (getter)func_get_dict, (setter)func_set_dict},
+    {"func_name", (getter)func_get_name, (setter)func_set_name},
+    {"__name__", (getter)func_get_name, (setter)func_set_name},
+    {NULL} /* Sentinel */
+};
+```
+
+## Function call execution sequence
+
+In `ceval.c`
+
+```c
+        case CALL_FUNCTION:
+        {
+            ...
+            x = call_function(&sp, oparg);
+            ...
+            PUSH(x);
+            if (x != NULL)
+                continue;
+            break;
+        }
+```
+
+```c
+static PyObject *
+call_function(PyObject ***pp_stack, int oparg
+#ifdef WITH_TSC
+                , uint64* pintr0, uint64* pintr1
+#endif
+                )
+{
+    ...
+        if (PyFunction_Check(func))
+            x = fast_function(func, pp_stack, n, na, nk);
+        else
+            x = do_call(func, pp_stack, na, nk);
+    ...
+    return x;
+}
+```
+
+```c
+static PyObject *
+fast_function(PyObject *func, PyObject ***pp_stack, int n, int na, int nk)
+{
+    PyCodeObject *co = (PyCodeObject *)PyFunction_GET_CODE(func);
+    PyObject *globals = PyFunction_GET_GLOBALS(func);
+    PyObject *argdefs = PyFunction_GET_DEFAULTS(func);
+    PyObject **d = NULL;
+    int nd = 0;
+    ...
+        f = PyFrame_New(tstate, co, globals, NULL);
+        ...
+        retval = PyEval_EvalFrameEx(f,0);
+        ++tstate->recursion_depth;
+        Py_DECREF(f);
+        --tstate->recursion_depth;
+        return retval;
+    ...
+}
+```
+
+## Closure
+
+The test code:
+
+```python
+# test.py
+
+x = 1000
+
+def foo(x):
+    def bar(y):
+        print(x + y)
+    return bar
+
+b = foo(10)
+c = foo(20)
+```
+
+Disassembled code:
+
+```
+>>> import test
+>>> import dis
+>>> dis.dis(test)
+Disassembly of b:
+  5           0 LOAD_DEREF               0 (x)
+              3 LOAD_FAST                0 (y)
+              6 BINARY_ADD
+              7 PRINT_ITEM
+              8 PRINT_NEWLINE
+              9 LOAD_CONST               0 (None)
+             12 RETURN_VALUE
+
+Disassembly of c:
+  5           0 LOAD_DEREF               0 (x)
+              3 LOAD_FAST                0 (y)
+              6 BINARY_ADD
+              7 PRINT_ITEM
+              8 PRINT_NEWLINE
+              9 LOAD_CONST               0 (None)
+             12 RETURN_VALUE
+
+Disassembly of foo:
+  4           0 LOAD_CLOSURE             0 (x)
+              3 BUILD_TUPLE              1
+              6 LOAD_CONST               1 (<code object bar at 0x10058bf30, file "test.py", line 4>)
+              9 MAKE_CLOSURE             0
+             12 STORE_FAST               1 (bar)
+
+  6          15 LOAD_FAST                1 (bar)
+             18 RETURN_VALUE
+
+```
+
+The code objects are the same, but not the function objects:
+
+```
+>>> test.b.func_code == test.c.func_code
+True
+>>> test.b.func_code is test.c.func_code
+True
+>>> test.b == test.c
+False
+```
+
+What's different is the function closure:
+
+```
+>>> test.b.func_closure
+(<cell at 0x1005b6248: int object at 0x1004053d0>,)
+>>> test.b.func_closure[0]
+<cell at 0x1005b6248: int object at 0x1004053d0>
+>>> test.b.func_closure[0].cell_contents
+10
+>>> test.c.func_closure[0].cell_contents
+20
+```
+
+Look at the op code: `LOAD_DEREF` in `ceval.c`:
+
+```c
+        case LOAD_DEREF:
+            x = freevars[oparg];
+            w = PyCell_Get(x);
+            ...
+            break;
+```
+
+It finds out the `freevar` and get its value from the Cell object. The `freevars`
+are:
+
+```
+>>> test.b.func_code.co_freevars
+('x',)
+```
+
+Back to the definition of function objects:
+
+```c
+    /* Invariant:
+     *     func_closure contains the bindings for func_code->co_freevars, so
+     *     PyTuple_Size(func_closure) == PyCode_GetNumFree(func_code)
+     *     (func_closure may be NULL if PyCode_GetNumFree(func_code) == 0).
+     */
+```
