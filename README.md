@@ -1117,3 +1117,307 @@ Back to the definition of function objects:
      *     (func_closure may be NULL if PyCode_GetNumFree(func_code) == 0).
      */
 ```
+
+# Lecture 7 - Iterators
+
+Learning Objective
+* To understand how iterators and 'for' loops work under the hood
+
+1. Python 'for' loop over a list
+   * `ceval.c`, `abstract.c`, `listobject.c`
+2. Defining a class with a custom iterator
+   * `iterator.h`, `iterobject.c`
+
+Iterator example:
+
+```python
+x = ['a','b','c']
+i = x.__iter__()
+i
+# <listiterator object at 0x1038b11d0>
+i.next()
+# 'a'
+i.next()
+# 'b'
+i.next()
+# 'c'
+i.next()
+# Traceback (most recent call last):
+#   File "<stdin>", line 1, in <module>
+# StopIteration
+```
+
+Iterate through list:
+
+```python
+j = iter(x)
+while True:
+    try:
+        print j.next()
+    except StopIteration:
+        break
+# a
+# b
+# c
+
+# Is equivalent to:
+for elt in x:
+    print elt
+# a
+# b
+# c
+```
+
+Iterate through dictionary:
+
+```python
+x = {'John': 50, 'Jane': 49, 'Joe': 12}
+for elt in x:
+    print elt
+# Jane
+# John
+# Joe
+```
+
+Iterate over string:
+
+```python
+s = 'hello world'
+for elt in s:
+    print elt
+# h
+# e
+# l
+# ...
+```
+
+Disassembling:
+
+```
+  1           0 LOAD_CONST               0 ('a')
+              3 LOAD_CONST               1 ('b')
+              6 LOAD_CONST               2 ('c')
+              9 BUILD_LIST               3
+             12 STORE_NAME               0 (x)
+
+  2          15 SETUP_LOOP              19 (to 37)
+             18 LOAD_NAME                0 (x)
+             21 GET_ITER
+        >>   22 FOR_ITER                11 (to 36)
+             25 STORE_NAME               1 (e)
+
+  3          28 LOAD_NAME                1 (e)
+             31 PRINT_ITEM
+             32 PRINT_NEWLINE
+             33 JUMP_ABSOLUTE           22
+        >>   36 POP_BLOCK
+        >>   37 LOAD_CONST               3 (None)
+             40 RETURN_VALUE
+```
+
+Instruction 15 to 37 is the loop.
+
+Op code: `GET_ITER` and `FOR_ITER`
+
+In `ceval.c`:
+
+```c
+        case GET_ITER:
+            /* before: [obj]; after [getiter(obj)] */
+            v = TOP();
+            x = PyObject_GetIter(v);
+            Py_DECREF(v);
+            if (x != NULL) {
+                SET_TOP(x);
+                PREDICT(FOR_ITER);
+                continue;
+            }
+            STACKADJ(-1);
+            break;
+
+        PREDICTED_WITH_ARG(FOR_ITER);
+        case FOR_ITER:
+            /* before: [iter]; after: [iter, iter()] *or* [] */
+            v = TOP();
+            x = (*v->ob_type->tp_iternext)(v);
+            if (x != NULL) {
+                PUSH(x);
+                PREDICT(STORE_FAST);
+                PREDICT(UNPACK_SEQUENCE);
+                continue;
+            }
+            if (PyErr_Occurred()) {
+                if (!PyErr_ExceptionMatches(
+                                PyExc_StopIteration))
+                    break;
+                PyErr_Clear();
+            }
+            /* iterator ended normally */
+            x = v = POP();
+            Py_DECREF(v);
+            JUMPBY(oparg);
+            continue;
+```
+
+The case `GET_ITER` predicts the next op code to be `FOR_ITER`.
+
+In `abstract.c`:
+
+```c
+PyObject *
+PyObject_GetIter(PyObject *o)
+{
+    PyTypeObject *t = o->ob_type;
+    getiterfunc f = NULL;
+    if (PyType_HasFeature(t, Py_TPFLAGS_HAVE_ITER))
+        f = t->tp_iter;
+    if (f == NULL) {
+        if (PySequence_Check(o))
+            return PySeqIter_New(o);
+        return type_error("'%.200s' object is not iterable", o);
+    }
+    else {
+        PyObject *res = (*f)(o);
+        if (res != NULL && !PyIter_Check(res)) {
+            PyErr_Format(PyExc_TypeError,
+                         "iter() returned non-iterator "
+                         "of type '%.100s'",
+                         res->ob_type->tp_name);
+            Py_DECREF(res);
+            res = NULL;
+        }
+        return res;
+    }
+}
+```
+
+In `iterobject.c`:
+
+```c
+typedef struct {
+    PyObject_HEAD
+    long      it_index;
+    PyObject *it_seq; /* Set to NULL when iterator is exhausted */
+} seqiterobject;
+
+PyObject *
+PySeqIter_New(PyObject *seq)
+{
+    seqiterobject *it;
+
+    if (!PySequence_Check(seq)) {
+        PyErr_BadInternalCall();
+        return NULL;
+    }
+    it = PyObject_GC_New(seqiterobject, &PySeqIter_Type);
+    if (it == NULL)
+        return NULL;
+    it->it_index = 0;
+    Py_INCREF(seq);
+    it->it_seq = seq;
+    _PyObject_GC_TRACK(it);
+    return (PyObject *)it;
+}
+```
+
+A sequence iterator has two attributes:
+1. it_index: starts from 0
+1. it_seq: points to the original sequence
+
+A sequence iterator keeps the numerical index.
+
+Finally we have a iterator pushed on the top of the value stack
+(instead of the sequence object.)
+
+```c
+        case FOR_ITER:
+            /* before: [iter]; after: [iter, iter()] *or* [] */
+            v = TOP();
+            x = (*v->ob_type->tp_iternext)(v);
+            if (x != NULL) {
+                PUSH(x);
+                PREDICT(STORE_FAST);
+                PREDICT(UNPACK_SEQUENCE);
+                continue;
+            }
+            if (PyErr_Occurred()) {
+                if (!PyErr_ExceptionMatches(
+                                PyExc_StopIteration))
+                    break;
+                PyErr_Clear();
+            }
+            /* iterator ended normally */
+            x = v = POP();
+            Py_DECREF(v);
+            JUMPBY(oparg);
+            continue;
+```
+
+* Under normal iteration, the code predicts `STORE_FAST`, `UNPACK_SEQUENCE`, and
+then `continue`s the main interpreter loop.
+* Only when `PyErr_Occurred` and does not match `PyExc_StopIteration` does the
+loop ended normally.
+
+The definition of `tp_iternext` is in `iterobject.c`:
+
+```c
+static PyObject *
+iter_iternext(PyObject *iterator)
+{
+    seqiterobject *it;
+    PyObject *seq;
+    PyObject *result;
+
+    assert(PySeqIter_Check(iterator));
+    it = (seqiterobject *)iterator;
+    seq = it->it_seq;
+    if (seq == NULL)
+        return NULL;
+
+    result = PySequence_GetItem(seq, it->it_index);
+    if (result != NULL) {
+        it->it_index++;
+        return result;
+    }
+    if (PyErr_ExceptionMatches(PyExc_IndexError) ||
+        PyErr_ExceptionMatches(PyExc_StopIteration))
+    {
+        PyErr_Clear();
+        Py_DECREF(seq);
+        it->it_seq = NULL;
+    }
+    return NULL;
+}
+```
+
+Python iterator objects use `NULL` to indicate the end of the iterator.
+This is confusing because Python also has a `None` object, which is a
+Python object, to indicate Python version of null pointer.
+
+`PyObject_GetIter` function has two cases.
+1. One for Python native sequence types (list, str)
+1. One for general sequences (customized sequence types)
+
+Example:
+
+```python
+# iclass.py
+class Counter:
+    def __init__(self, low, high):
+        self.current = low
+        self.high = high
+    
+    def __iter__(self):
+        return self
+    
+    def next(self):
+        if self.current > self.high:
+            raise StopIteration
+        else:
+            self.current += 1
+            return self.current - 1
+
+for c in Counter(5, 10):
+    print c
+# 5 6 7 8 9 10
+```
